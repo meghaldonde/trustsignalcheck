@@ -15,6 +15,7 @@ class AIAnalysis(BaseModel):
 class DomainSignalScore(BaseModel):
     reputation_score: int  # 0-100
     source: str
+    threat_type: str | None = None  # e.g., "MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"
 
 
 class ScanResponse(BaseModel):

@@ -69,11 +69,25 @@ function displayResult(data) {
     .map((s) => `<li>${s}</li>`)
     .join("");
 
+  // Format threat warning if present
+  let threatWarning = "";
+  if (data.domain_signal_score.threat_type) {
+    const threatLabels = {
+      "MALWARE": "🦠 Malware Detected",
+      "SOCIAL_ENGINEERING": "🎣 Phishing/Social Engineering",
+      "UNWANTED_SOFTWARE": "⚠️ Unwanted Software",
+      "POTENTIALLY_HARMFUL_APPLICATION": "⚠️ Potentially Harmful"
+    };
+    const label = threatLabels[data.domain_signal_score.threat_type] || `⚠️ ${data.domain_signal_score.threat_type}`;
+    threatWarning = `<div style="background:#fce8e6;color:#c5221f;padding:8px;border-radius:4px;margin-bottom:8px;font-weight:bold;">${label}</div>`;
+  }
+
   document.getElementById("result").innerHTML = `
     <div class="score-container">
       <div class="trust-score ${scoreClass}">${score}</div>
       <div>Signal Trust Score</div>
     </div>
+    ${threatWarning}
     <div class="details">
       <p><strong>Domain Signal Score:</strong> ${data.domain_signal_score.reputation_score}/100 (${data.domain_signal_score.source})</p>
       <p><strong>AI Probability:</strong> ${data.ai_analysis.ai_probability_score}%</p>

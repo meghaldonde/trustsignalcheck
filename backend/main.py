@@ -3,9 +3,11 @@ import hashlib
 import os
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from pysafebrowsing import SafeBrowsing
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -88,12 +90,26 @@ app.add_middleware(
 # Gemini client (lazy initialization)
 _gemini_client = None
 
+# Google Safe Browsing client (lazy initialization)
+_safebrowsing_client = None
+_executor = ThreadPoolExecutor(max_workers=2)
+
+# Safe Browsing API key (separate from Gemini)
+SAFE_BROWSING_API_KEY = os.environ.get("GOOGLE_SAFE_BROWSING_API_KEY", "")
+
 
 def get_gemini_client():
     global _gemini_client
     if _gemini_client is None:
         _gemini_client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
     return _gemini_client
+
+
+def get_safebrowsing_client():
+    global _safebrowsing_client
+    if _safebrowsing_client is None and SAFE_BROWSING_API_KEY:
+        _safebrowsing_client = SafeBrowsing(SAFE_BROWSING_API_KEY)
+    return _safebrowsing_client
 
 
 def calculate_cost(input_tokens: int, output_tokens: int) -> float:
@@ -103,20 +119,53 @@ def calculate_cost(input_tokens: int, output_tokens: int) -> float:
     return input_cost + output_cost
 
 
+def _check_url_with_safebrowsing(url: str) -> dict | None:
+    """Synchronous Safe Browsing lookup (runs in thread pool)."""
+    client = get_safebrowsing_client()
+    if not client:
+        return None
+    try:
+        result = client.lookup_urls([url])
+        return result.get(url)
+    except Exception as e:
+        print(f"Safe Browsing API error: {e}")
+        return None
+
+
 async def check_domain_signal(url: str) -> DomainSignalScore:
     """
-    Placeholder for domain reputation check.
-    Can be replaced with Google Safe Browsing or VirusTotal API.
+    Check domain reputation using Google Safe Browsing API.
+    Falls back to mock implementation if API key not configured.
     """
-    domain = urlparse(url).netloc
+    # Try Google Safe Browsing API first
+    if SAFE_BROWSING_API_KEY:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(_executor, _check_url_with_safebrowsing, url)
 
-    # Mock implementation - returns high trust for known domains
+        if result is not None:
+            if result.get("malicious"):
+                # URL is flagged as dangerous
+                threat_type = result.get("threats", [{}])[0].get("threatType", "UNKNOWN")
+                return DomainSignalScore(
+                    reputation_score=10,  # Very low trust
+                    source="google_safe_browsing",
+                    threat_type=threat_type
+                )
+            else:
+                # URL passed Safe Browsing check - safe
+                return DomainSignalScore(
+                    reputation_score=85,
+                    source="google_safe_browsing",
+                    threat_type=None
+                )
+
+    # Fallback: Mock implementation if API key not set
+    domain = urlparse(url).netloc
     trusted_domains = ["google.com", "github.com", "wikipedia.org", "example.com"]
 
     if any(trusted in domain for trusted in trusted_domains):
         return DomainSignalScore(reputation_score=90, source="mock_trusted_list")
 
-    # Default moderate trust for unknown domains
     return DomainSignalScore(reputation_score=50, source="mock_unknown")
 
 

@@ -21,3 +21,6 @@ Thumbs.db
 
 # Zip files
 *.zip
+
+# Database
+*.db

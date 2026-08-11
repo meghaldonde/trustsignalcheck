@@ -21,3 +21,9 @@ class ScanResponse(BaseModel):
     domain_signal_score: DomainSignalScore
     ai_analysis: AIAnalysis
     signal_trust_score: int  # 0-100
+
+
+class GrantScansRequest(BaseModel):
+    user_id: str
+    extra_scans: int  # Total extra scans to grant (not additive)
+    notes: str = ""

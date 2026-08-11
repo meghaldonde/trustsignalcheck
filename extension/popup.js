@@ -18,12 +18,21 @@ document.getElementById("scanBtn").addEventListener("click", async () => {
 
     const response = await fetch(CONFIG.API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
         url: pageData.url,
         text_snippet: pageData.text,
       }),
     });
+
+    // Handle rate limit
+    if (response.status === 429) {
+      const errorData = await response.json();
+      displayRateLimitError(errorData.detail);
+      return;
+    }
 
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);
@@ -38,6 +47,17 @@ document.getElementById("scanBtn").addEventListener("click", async () => {
     btn.textContent = "Scan Page";
   }
 });
+
+function displayRateLimitError(detail) {
+  document.getElementById("result").innerHTML = `
+    <div class="rate-limit">
+      <div class="rate-limit-icon">⏱️</div>
+      <div class="rate-limit-title">Daily Limit Reached</div>
+      <div class="rate-limit-message">${detail.message}</div>
+      <div class="rate-limit-hint">Come back tomorrow for more scans!</div>
+    </div>
+  `;
+}
 
 function displayResult(data) {
   const score = data.signal_trust_score;

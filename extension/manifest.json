@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "SignalCheck",
+  "version": "1.0.0",
+  "description": "Evaluate text authenticity and domain reputation with Trust Score",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "https://*.onrender.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SignalCheck"
+  }
+}

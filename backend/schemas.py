@@ -1,0 +1,23 @@
+from pydantic import BaseModel
+
+
+class ScanRequest(BaseModel):
+    url: str
+    text_snippet: str
+
+
+class AIAnalysis(BaseModel):
+    ai_probability_score: int  # 0-100
+    reasoning_flag: str
+    key_signals: list[str]
+
+
+class DomainSignalScore(BaseModel):
+    reputation_score: int  # 0-100
+    source: str
+
+
+class ScanResponse(BaseModel):
+    domain_signal_score: DomainSignalScore
+    ai_analysis: AIAnalysis
+    signal_trust_score: int  # 0-100

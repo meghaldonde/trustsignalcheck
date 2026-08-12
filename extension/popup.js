@@ -1,5 +1,12 @@
 // Uses CONFIG.API_URL from config.js
 
+// HTML escape function to prevent injection from AI responses
+const esc = (s) =>
+  String(s).replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+
 document.getElementById("scanBtn").addEventListener("click", async () => {
   const btn = document.getElementById("scanBtn");
   const resultDiv = document.getElementById("result");
@@ -41,7 +48,7 @@ document.getElementById("scanBtn").addEventListener("click", async () => {
     const data = await response.json();
     displayResult(data);
   } catch (error) {
-    resultDiv.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+    resultDiv.innerHTML = `<div class="error">Error: ${esc(error.message)}</div>`;
   } finally {
     btn.disabled = false;
     btn.textContent = "Scan Page";
@@ -53,7 +60,7 @@ function displayRateLimitError(detail) {
     <div class="rate-limit">
       <div class="rate-limit-icon">⏱️</div>
       <div class="rate-limit-title">Daily Limit Reached</div>
-      <div class="rate-limit-message">${detail.message}</div>
+      <div class="rate-limit-message">${esc(detail.message)}</div>
       <div class="rate-limit-hint">Come back tomorrow for more scans!</div>
     </div>
   `;
@@ -65,33 +72,36 @@ function displayResult(data) {
   if (score >= 70) scoreClass = "score-high";
   else if (score < 40) scoreClass = "score-low";
 
+  // Escape AI-generated signals to prevent prompt injection attacks
   const signalsList = data.ai_analysis.key_signals
-    .map((s) => `<li>${s}</li>`)
+    .map((s) => `<li>${esc(s)}</li>`)
     .join("");
 
-  // Format threat warning if present
+  // Format threat warning if present (escape threat type)
   let threatWarning = "";
   if (data.domain_signal_score.threat_type) {
     const threatLabels = {
-      "MALWARE": "🦠 Malware Detected",
-      "SOCIAL_ENGINEERING": "🎣 Phishing/Social Engineering",
-      "UNWANTED_SOFTWARE": "⚠️ Unwanted Software",
-      "POTENTIALLY_HARMFUL_APPLICATION": "⚠️ Potentially Harmful"
+      MALWARE: "🦠 Malware Detected",
+      SOCIAL_ENGINEERING: "🎣 Phishing/Social Engineering",
+      UNWANTED_SOFTWARE: "⚠️ Unwanted Software",
+      POTENTIALLY_HARMFUL_APPLICATION: "⚠️ Potentially Harmful",
     };
-    const label = threatLabels[data.domain_signal_score.threat_type] || `⚠️ ${data.domain_signal_score.threat_type}`;
+    const label =
+      threatLabels[data.domain_signal_score.threat_type] ||
+      `⚠️ ${esc(data.domain_signal_score.threat_type)}`;
     threatWarning = `<div style="background:#fce8e6;color:#c5221f;padding:8px;border-radius:4px;margin-bottom:8px;font-weight:bold;">${label}</div>`;
   }
 
   document.getElementById("result").innerHTML = `
     <div class="score-container">
-      <div class="trust-score ${scoreClass}">${score}</div>
+      <div class="trust-score ${scoreClass}">${esc(score)}</div>
       <div>Signal Trust Score</div>
     </div>
     ${threatWarning}
     <div class="details">
-      <p><strong>Domain Signal Score:</strong> ${data.domain_signal_score.reputation_score}/100 (${data.domain_signal_score.source})</p>
-      <p><strong>AI Probability:</strong> ${data.ai_analysis.ai_probability_score}%</p>
-      <p><strong>Analysis:</strong> ${data.ai_analysis.reasoning_flag}</p>
+      <p><strong>Domain Signal Score:</strong> ${esc(data.domain_signal_score.reputation_score)}/100 (${esc(data.domain_signal_score.source)})</p>
+      <p><strong>AI Probability:</strong> ${esc(data.ai_analysis.ai_probability_score)}%</p>
+      <p><strong>Analysis:</strong> ${esc(data.ai_analysis.reasoning_flag)}</p>
       <p><strong>Signals:</strong></p>
       <ul class="signals">${signalsList}</ul>
     </div>

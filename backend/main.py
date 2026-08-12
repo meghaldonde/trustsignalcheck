@@ -1,5 +1,8 @@
 import asyncio
 import hashlib
+import ipaddress
+import json
+import logging
 import os
 import secrets
 import time
@@ -7,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from pydantic import ValidationError
 from pysafebrowsing import SafeBrowsing
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -25,8 +29,33 @@ from database import (
 )
 from schemas import AIAnalysis, DomainSignalScore, GrantScansRequest, ScanRequest, ScanResponse
 
-# Salt for IP hashing (prevents rainbow table attacks)
-IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "signalcheck-default-salt-2024")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Salt for IP hashing - REQUIRED, no default (security fix)
+IP_HASH_SALT = os.environ.get("IP_HASH_SALT")
+if not IP_HASH_SALT:
+    raise RuntimeError("IP_HASH_SALT environment variable must be set")
+
+
+def get_client_ip(request: Request) -> str:
+    """
+    Extract and validate client IP from request.
+    On Render, the real client IP is appended to X-Forwarded-For (take last entry).
+    Validates IP format to prevent header spoofing bypass.
+    """
+    xff = request.headers.get("X-Forwarded-For", "")
+    # Render appends the real client IP; take the LAST entry, not the first
+    candidate = xff.split(",")[-1].strip() if xff else ""
+
+    # Validate it's a real IP address (prevents spoofing with garbage)
+    try:
+        ipaddress.ip_address(candidate)
+        return candidate
+    except ValueError:
+        # Invalid or empty - fall back to direct connection
+        return request.client.host if request.client else "unknown"
 
 
 def hash_ip(ip_address: str) -> str:
@@ -79,12 +108,15 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
         )
     return credentials.username
 
+# CORS: Only allow requests from the Chrome extension
+# Note: Extension fetches with host_permissions bypass page CORS anyway,
+# but this is defense in depth for any browser-based testing
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origin_regex=r"^chrome-extension://[a-z]{32}$",  # Chrome extension IDs are 32 lowercase letters
+    allow_credentials=False,
+    allow_methods=["POST", "GET"],
+    allow_headers=["Content-Type"],
 )
 
 # Gemini client (lazy initialization)
@@ -119,8 +151,11 @@ def calculate_cost(input_tokens: int, output_tokens: int) -> float:
     return input_cost + output_cost
 
 
-def _check_url_with_safebrowsing(url: str) -> dict | None:
-    """Synchronous Safe Browsing lookup (runs in thread pool)."""
+def _check_url_with_safebrowsing(url: str) -> dict | None | str:
+    """
+    Synchronous Safe Browsing lookup (runs in thread pool).
+    Returns dict on success, None if client unavailable, "error" string on API failure.
+    """
     client = get_safebrowsing_client()
     if not client:
         return None
@@ -128,8 +163,8 @@ def _check_url_with_safebrowsing(url: str) -> dict | None:
         result = client.lookup_urls([url])
         return result.get(url)
     except Exception as e:
-        print(f"Safe Browsing API error: {e}")
-        return None
+        logger.error(f"Safe Browsing API error: {e}")
+        return "error"  # Distinct from None (not configured) for monitoring
 
 
 async def check_domain_signal(url: str) -> DomainSignalScore:
@@ -139,8 +174,16 @@ async def check_domain_signal(url: str) -> DomainSignalScore:
     """
     # Try Google Safe Browsing API first
     if SAFE_BROWSING_API_KEY:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(_executor, _check_url_with_safebrowsing, url)
+        loop = asyncio.get_running_loop()  # Fixed: use get_running_loop() not deprecated get_event_loop()
+        result = await loop.run_in_executor(_executor, _check_url_with_safebrowsing, str(url))
+
+        # Handle API error distinctly from "not configured"
+        if result == "error":
+            return DomainSignalScore(
+                reputation_score=50,
+                source="safe_browsing_unavailable",  # Distinct source for monitoring
+                threat_type=None
+            )
 
         if result is not None:
             if result.get("malicious"):
@@ -160,7 +203,7 @@ async def check_domain_signal(url: str) -> DomainSignalScore:
                 )
 
     # Fallback: Mock implementation if API key not set
-    domain = urlparse(url).netloc
+    domain = urlparse(str(url)).netloc
     trusted_domains = ["google.com", "github.com", "wikipedia.org", "example.com"]
 
     if any(trusted in domain for trusted in trusted_domains):
@@ -193,15 +236,46 @@ Respond with JSON only, no markdown or extra text."""
 
     # Parse JSON response
     response_text = interaction.output_text.strip()
+
+    # Strip markdown fences more robustly
     if response_text.startswith("```"):
+        # Find the actual JSON content between fences
         lines = response_text.split("\n")
-        response_text = "\n".join(lines[1:-1])
+        json_lines = []
+        in_json = False
+        for line in lines:
+            if line.startswith("```") and not in_json:
+                in_json = True
+                continue
+            elif line.startswith("```") and in_json:
+                break
+            elif in_json:
+                json_lines.append(line)
+        response_text = "\n".join(json_lines)
 
-    # Estimate tokens (rough approximation: 1 token ≈ 4 chars)
-    input_tokens = len(prompt) // 4
-    output_tokens = len(response_text) // 4
+    # Get real token counts from API response (not estimates)
+    usage = getattr(interaction, "usage_metadata", None)
+    if usage:
+        input_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+        logger.info(f"Token usage (actual): input={input_tokens}, output={output_tokens}")
+    else:
+        # Fallback to estimate if usage not available
+        input_tokens = len(prompt) // 4
+        output_tokens = len(response_text) // 4
+        logger.warning(f"Token usage (estimated): input={input_tokens}, output={output_tokens}")
 
-    return AIAnalysis.model_validate_json(response_text), input_tokens, output_tokens
+    # Parse and validate response with error handling
+    try:
+        analysis = AIAnalysis.model_validate_json(response_text)
+    except (ValidationError, json.JSONDecodeError) as e:
+        logger.error(f"Failed to parse Gemini response: {e}. Raw response: {response_text[:500]}")
+        raise HTTPException(
+            status_code=502,
+            detail="AI analysis returned invalid response. Please try again."
+        )
+
+    return analysis, input_tokens, output_tokens
 
 
 def calculate_signal_trust_score(domain_signal: DomainSignalScore, ai_analysis: AIAnalysis) -> int:
@@ -226,13 +300,8 @@ async def scan(
     Rate limited to 1 scan per user per day.
     User identified by hashed IP (privacy-preserving).
     """
-    # Get client IP and hash it (privacy-preserving)
-    client_ip = request.client.host if request.client else "unknown"
-    # Check for forwarded IP (when behind proxy/load balancer)
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-
+    # Get client IP securely (validates to prevent spoofing)
+    client_ip = get_client_ip(request)
     user_id = hash_ip(client_ip)
     get_or_create_user(user_id)
 
@@ -269,7 +338,7 @@ async def scan(
     # Log scan and increment rate limit counter
     log_scan(
         user_id=user_id,
-        url=scan_request.url,
+        url=str(scan_request.url),  # Convert HttpUrl to str for sqlite
         domain_signal_score=domain_signal.reputation_score,
         ai_probability_score=ai_analysis.ai_probability_score,
         signal_trust_score=signal_trust_score,
@@ -495,6 +564,10 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
     </table>
 
     <script>
+        // HTML escape function to prevent XSS
+        const esc = s => String(s).replace(/[&<>"']/g,
+            c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
         async function loadStats() {
             document.body.classList.add('loading');
             try {
@@ -558,28 +631,28 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
             `).join('') || '<tr><td colspan="4">No data</td></tr>';
             document.querySelector('#daily-table tbody').innerHTML = dailyBody;
 
-            // Recent scans table
+            // Recent scans table (escape user-supplied data to prevent XSS)
             const recentBody = data.recent_scans.map(s => `
                 <tr>
-                    <td>${new Date(s.created_at).toLocaleString()}</td>
-                    <td>${s.user_id.slice(0, 8)}...</td>
-                    <td>${s.url.slice(0, 30)}...</td>
-                    <td>${s.signal_trust_score}</td>
-                    <td>${s.ai_probability_score}%</td>
-                    <td>$${s.cost_usd.toFixed(4)}</td>
-                    <td>${s.response_time_ms}ms</td>
-                    <td><button class="grant-link" onclick="fillGrantForm('${s.user_id}')">Grant</button></td>
+                    <td>${esc(new Date(s.created_at).toLocaleString())}</td>
+                    <td>${esc(s.user_id.slice(0, 8))}...</td>
+                    <td>${esc(s.url.slice(0, 30))}...</td>
+                    <td>${esc(s.signal_trust_score)}</td>
+                    <td>${esc(s.ai_probability_score)}%</td>
+                    <td>$${esc(s.cost_usd.toFixed(4))}</td>
+                    <td>${esc(s.response_time_ms)}ms</td>
+                    <td><button class="grant-link" onclick="fillGrantForm('${esc(s.user_id)}')">Grant</button></td>
                 </tr>
             `).join('') || '<tr><td colspan="8">No data</td></tr>';
             document.querySelector('#recent-table tbody').innerHTML = recentBody;
 
-            // Allowances table
+            // Allowances table (escape user-supplied data to prevent XSS)
             const allowancesBody = (data.allowances || []).map(a => `
                 <tr>
-                    <td>${a.user_id.slice(0, 8)}...</td>
-                    <td>${a.extra_scans}</td>
-                    <td>${a.notes || '-'}</td>
-                    <td>${new Date(a.granted_at).toLocaleString()}</td>
+                    <td>${esc(a.user_id.slice(0, 8))}...</td>
+                    <td>${esc(a.extra_scans)}</td>
+                    <td>${esc(a.notes || '-')}</td>
+                    <td>${esc(new Date(a.granted_at).toLocaleString())}</td>
                 </tr>
             `).join('') || '<tr><td colspan="4">No allowances granted</td></tr>';
             document.querySelector('#allowances-table tbody').innerHTML = allowancesBody;

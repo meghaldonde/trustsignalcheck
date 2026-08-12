@@ -1,18 +1,29 @@
 {
   "manifest_version": 3,
-  "name": "SignalCheck",
+  "name": "SignalCheck - AI Trust Verification",
   "version": "1.0.0",
-  "description": "Evaluate text authenticity and domain reputation with Trust Score",
+  "description": "Instant trust verification combining domain reputation analysis with AI content detection. One click reveals if a website is safe and if content is AI-generated.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
-    "http://localhost:8000/*",
-    "https://*.onrender.com/*"
+    "https://trustsignalcheck.onrender.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "SignalCheck"
+    "default_title": "SignalCheck - Verify Trust",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }

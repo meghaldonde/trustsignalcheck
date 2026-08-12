@@ -19,8 +19,9 @@ Thumbs.db
 # Logs
 *.log
 
-# Zip files
+# Zip files and distribution
 *.zip
+dist/
 
 # Database
 *.db
@@ -30,3 +31,6 @@ docs/
 
 # Product images (for Notion, not GitHub)
 product-images/
+
+# Utility scripts (not needed for deployment)
+scripts/

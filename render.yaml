@@ -7,5 +7,13 @@ services:
     envVars:
       - key: GOOGLE_API_KEY
         sync: false
+      - key: GOOGLE_SAFE_BROWSING_API_KEY
+        sync: false
+      - key: IP_HASH_SALT
+        sync: false  # Required - app won't start without it
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11"

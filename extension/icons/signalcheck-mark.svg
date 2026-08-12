@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="SignalCheck">
+  <title>SignalCheck</title>
+  <!--
+    SignalCheck mark — master (detail) variant.
+    Shield = trust. Pulse = the signal being measured.
+    White carries the analysis spike; cyan carries the resolved baseline.
+
+    Palette: #4F46E5 -> #312E81 (shield), #FFFFFF (spike), #22D3EE (accent)
+    Use this variant at 48px and above. Below 48px use signalcheck-mark-small.svg.
+    Geometry is mirrored exactly in scripts/generate_icons.py.
+  -->
+  <defs>
+    <linearGradient id="sc-shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#312E81"/>
+    </linearGradient>
+    <clipPath id="sc-clip">
+      <path d="M 40 0 H 472 A 40 40 0 0 1 512 40 V 272
+               C 512 388 420 470 256 512
+               C 92 470 0 388 0 272 V 40
+               A 40 40 0 0 1 40 0 Z"/>
+    </clipPath>
+  </defs>
+
+  <path d="M 40 0 H 472 A 40 40 0 0 1 512 40 V 272
+           C 512 388 420 470 256 512
+           C 92 470 0 388 0 272 V 40
+           A 40 40 0 0 1 40 0 Z"
+        fill="url(#sc-shield)"/>
+
+  <g clip-path="url(#sc-clip)" fill="none" stroke-width="36"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 78 250 L 150 250 L 196 168 L 240 336 L 286 200" stroke="#FFFFFF"/>
+    <path d="M 286 200 L 330 250 L 434 250" stroke="#22D3EE"/>
+  </g>
+</svg>

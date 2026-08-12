@@ -1,8 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 
 
 class ScanRequest(BaseModel):
-    url: str
+    url: HttpUrl  # Validates URL format, prevents XSS via malformed URLs
     text_snippet: str
 
 

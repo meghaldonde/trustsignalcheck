@@ -13,6 +13,13 @@
       font-size: 18px;
       margin: 0 0 16px 0;
       color: #333;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h1 img {
+      width: 24px;
+      height: 24px;
     }
     #scanBtn {
       width: 100%;
@@ -98,7 +105,7 @@
   </style>
 </head>
 <body>
-  <h1>SignalCheck</h1>
+  <h1><img src="icons/icon48.png" alt="">SignalCheck</h1>
   <button id="scanBtn">Scan Page</button>
   <div id="result"></div>
   <script src="config.js"></script>

@@ -67,8 +67,10 @@ def hash_ip(ip_address: str) -> str:
     return hashlib.sha256(salted.encode()).hexdigest()[:16]  # First 16 chars
 
 # Gemini pricing (per 1M tokens) - Gemini 3.6 Flash
-GEMINI_INPUT_COST_PER_1M = 0.075  # $0.075 per 1M input tokens
-GEMINI_OUTPUT_COST_PER_1M = 0.30  # $0.30 per 1M output tokens
+# Source: https://ai.google.dev/gemini-api/docs/pricing
+# Verified 2026-08-12. Re-check before citing these figures anywhere public.
+GEMINI_INPUT_COST_PER_1M = 1.50   # $1.50 per 1M input tokens
+GEMINI_OUTPUT_COST_PER_1M = 7.50  # $7.50 per 1M output tokens
 
 # Rate limit config
 MAX_SCANS_PER_DAY = 1
@@ -254,15 +256,19 @@ Respond with JSON only, no markdown or extra text."""
         response_text = "\n".join(json_lines)
 
     # Get real token counts from API response (not estimates)
-    usage = getattr(interaction, "usage_metadata", None)
+    # interactions.create() uses .usage with total_input_tokens, total_output_tokens, total_thought_tokens
+    usage = getattr(interaction, "usage", None)
     if usage:
-        input_tokens = getattr(usage, "prompt_token_count", 0) or 0
-        output_tokens = getattr(usage, "candidates_token_count", 0) or 0
-        logger.info(f"Token usage (actual): input={input_tokens}, output={output_tokens}")
+        input_tokens = getattr(usage, "total_input_tokens", 0) or 0
+        # Output cost includes thought/reasoning tokens (billed but not in output_text)
+        output_tokens = (getattr(usage, "total_output_tokens", 0) or 0) + (getattr(usage, "total_thought_tokens", 0) or 0)
+        token_source = "measured"
+        logger.info(f"Token usage (measured): input={input_tokens}, output={output_tokens} (incl. {getattr(usage, 'total_thought_tokens', 0)} thought tokens)")
     else:
         # Fallback to estimate if usage not available
         input_tokens = len(prompt) // 4
         output_tokens = len(response_text) // 4
+        token_source = "estimated"
         logger.warning(f"Token usage (estimated): input={input_tokens}, output={output_tokens}")
 
     # Parse and validate response with error handling
@@ -275,7 +281,7 @@ Respond with JSON only, no markdown or extra text."""
             detail="AI analysis returned invalid response. Please try again."
         )
 
-    return analysis, input_tokens, output_tokens
+    return analysis, input_tokens, output_tokens, token_source
 
 
 def calculate_signal_trust_score(domain_signal: DomainSignalScore, ai_analysis: AIAnalysis) -> int:
@@ -324,7 +330,7 @@ async def scan(
     start_time = time.time()
 
     # Run domain check and AI analysis in parallel
-    domain_signal, (ai_analysis, input_tokens, output_tokens) = await asyncio.gather(
+    domain_signal, (ai_analysis, input_tokens, output_tokens, token_source) = await asyncio.gather(
         check_domain_signal(scan_request.url),
         analyze_with_gemini(scan_request.text_snippet),
     )
@@ -346,6 +352,7 @@ async def scan(
         output_tokens=output_tokens,
         cost_usd=cost_usd,
         response_time_ms=response_time_ms,
+        token_source=token_source,
     )
     increment_scan_count(user_id)
 
@@ -400,19 +407,23 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
             padding: 24px;
             color: #333;
         }
-        h1 { margin-bottom: 24px; color: #1a1a1a; }
+        h1 { margin-bottom: 24px; color: #1a1a1a; display: flex; align-items: center; gap: 12px; }
+        h1 svg { width: 32px; height: 32px; }
         h2 { margin: 24px 0 16px; color: #333; font-size: 18px; }
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 16px;
-            margin-bottom: 24px;
+            margin-bottom: 16px;
         }
         .card {
             background: white;
             padding: 20px;
             border-radius: 12px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .card.accent {
+            border-left: 4px solid #fbbc04;
         }
         .card-label {
             font-size: 12px;
@@ -426,9 +437,20 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
             margin-top: 8px;
             color: #1a1a1a;
         }
+        .card-sub {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
         .card-value.green { color: #34a853; }
         .card-value.blue { color: #4285f4; }
         .card-value.orange { color: #fbbc04; }
+        .cost-note {
+            font-size: 12px;
+            color: #666;
+            font-style: italic;
+            margin-bottom: 24px;
+        }
         table {
             width: 100%;
             background: white;
@@ -516,10 +538,42 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
             font-size: 12px;
         }
         .grant-link:hover { background: #3367d6; }
+        .badge {
+            display: inline-block;
+            font-size: 10px;
+            padding: 1px 4px;
+            border-radius: 3px;
+            vertical-align: middle;
+            margin-left: 2px;
+        }
+        .badge-measured {
+            background: #d4edda;
+            color: #155724;
+        }
+        .badge-estimated {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+        .chart-empty {
+            text-align: center;
+            color: #666;
+            padding: 40px;
+        }
+        .tooltip {
+            cursor: help;
+            border-bottom: 1px dotted #666;
+        }
     </style>
 </head>
 <body>
-    <h1>SignalCheck Admin Dashboard</h1>
+    <h1><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SignalCheck"><defs><linearGradient id="sc-shield" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4F46E5"/><stop offset="1" stop-color="#312E81"/></linearGradient><clipPath id="sc-clip"><path d="M 40 0 H 472 A 40 40 0 0 1 512 40 V 272 C 512 388 420 470 256 512 C 92 470 0 388 0 272 V 40 A 40 40 0 0 1 40 0 Z"/></clipPath></defs><path d="M 40 0 H 472 A 40 40 0 0 1 512 40 V 272 C 512 388 420 470 256 512 C 92 470 0 388 0 272 V 40 A 40 40 0 0 1 40 0 Z" fill="url(#sc-shield)"/><g clip-path="url(#sc-clip)" fill="none" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"><path d="M 128 252 L 196 252 L 250 348 L 322 152 L 356 202" stroke="#FFFFFF"/><path d="M 356 202 L 384 252" stroke="#22D3EE"/></g></svg>SignalCheck Admin Dashboard</h1>
     <button class="refresh-btn" onclick="loadStats()">Refresh Data</button>
 
     <h2>Grant Extra Scans</h2>
@@ -546,16 +600,16 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
         <tbody><tr><td colspan="4">Loading...</td></tr></tbody>
     </table>
 
-    <h2>Overview</h2>
+    <h2>Cost Overview</h2>
     <div class="grid" id="stats-grid">
         <div class="card"><div class="card-label">Loading...</div></div>
     </div>
+    <div class="cost-note" id="cost-note"></div>
 
-    <h2>Daily Stats (Last 7 Days)</h2>
-    <table id="daily-table">
-        <thead><tr><th>Date</th><th>Scans</th><th>Tokens</th><th>Cost</th></tr></thead>
-        <tbody><tr><td colspan="4">Loading...</td></tr></tbody>
-    </table>
+    <h2>Daily Cost (Last 7 Days)</h2>
+    <div class="chart-container" id="daily-chart">
+        <div class="chart-empty">Loading...</div>
+    </div>
 
     <h2>Recent Scans</h2>
     <table id="recent-table">
@@ -567,6 +621,11 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
         // HTML escape function to prevent XSS
         const esc = s => String(s).replace(/[&<>"']/g,
             c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+        // Pricing constants - keep in sync with main.py
+        const PRICE_IN  = 1.50;   // per 1M tokens
+        const PRICE_OUT = 7.50;   // per 1M tokens
+        const DAILY_BUDGET_USD = 1.00;
 
         async function loadStats() {
             document.body.classList.add('loading');
@@ -581,6 +640,39 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
         }
 
         function renderStats(data) {
+            // Compute costs from token counts at current prices
+            // (Stored cost_usd fields used old prices, so we ignore them)
+            const inputCost  = (data.total_input_tokens / 1e6) * PRICE_IN;
+            const outputCost = (data.total_output_tokens / 1e6) * PRICE_OUT;
+            const totalCost  = inputCost + outputCost;
+            const totalTokens = data.total_input_tokens + data.total_output_tokens;
+
+            const inputPct  = totalCost > 0 ? Math.round((inputCost / totalCost) * 100) : 0;
+            const outputPct = totalCost > 0 ? 100 - inputPct : 0;
+
+            // Use valid_scans_for_cost (excludes zero-token rows) for accurate cost per scan
+            const validScans = data.valid_scans_for_cost || data.total_scans;
+            const costPerScan = validScans > 0 ? totalCost / validScans : 0;
+            const headroom = costPerScan > 0 ? Math.floor(DAILY_BUDGET_USD / costPerScan) : null;
+
+            // Provenance stats
+            const measuredScans = data.measured_scans || 0;
+            const estimatedScans = data.estimated_scans || 0;
+            const zeroTokenScans = data.zero_token_scans || 0;
+
+            // Blended rate for daily stats (tokens → cost)
+            // Assumes each day had roughly the same input/output ratio as overall
+            const blendedRate = totalTokens > 0 ? totalCost / totalTokens : 0;
+            const dailyCost = d => ((d.tokens || 0) * blendedRate);
+
+            // Run rate: average daily cost across days present, multiplied by 30
+            let runRate = null;
+            if (data.daily_stats && data.daily_stats.length > 0) {
+                const totalDailyCost = data.daily_stats.reduce((sum, d) => sum + dailyCost(d), 0);
+                const avgDailyCost = totalDailyCost / data.daily_stats.length;
+                runRate = avgDailyCost * 30;
+            }
+
             document.getElementById('stats-grid').innerHTML = `
                 <div class="card">
                     <div class="card-label">Total Users</div>
@@ -591,20 +683,30 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
                     <div class="card-value blue">${data.total_scans}</div>
                 </div>
                 <div class="card">
-                    <div class="card-label">Scans Today</div>
-                    <div class="card-value">${data.scans_today}</div>
+                    <div class="card-label">Input Tokens</div>
+                    <div class="card-value">${data.total_input_tokens.toLocaleString()}</div>
+                    <div class="card-sub">$${inputCost.toFixed(4)} (${inputPct}% of cost)</div>
                 </div>
-                <div class="card">
-                    <div class="card-label">Total Tokens</div>
-                    <div class="card-value">${data.total_tokens.toLocaleString()}</div>
+                <div class="card accent">
+                    <div class="card-label">Output Tokens</div>
+                    <div class="card-value orange">${data.total_output_tokens.toLocaleString()}</div>
+                    <div class="card-sub">$${outputCost.toFixed(4)} (${outputPct}% of cost)</div>
                 </div>
                 <div class="card">
                     <div class="card-label">Total Cost</div>
-                    <div class="card-value green">$${data.total_cost_usd.toFixed(4)}</div>
+                    <div class="card-value green">$${totalCost.toFixed(4)}</div>
                 </div>
                 <div class="card">
-                    <div class="card-label">Cost Today</div>
-                    <div class="card-value">$${data.cost_today_usd.toFixed(4)}</div>
+                    <div class="card-label">Cost per Scan</div>
+                    <div class="card-value">${costPerScan > 0 ? '$' + costPerScan.toFixed(4) : '--'}</div>
+                </div>
+                <div class="card">
+                    <div class="card-label"><span class="tooltip" title="Assumes each day has the same input/output ratio as the overall period">Run Rate (est.)</span></div>
+                    <div class="card-value">${runRate !== null ? '$' + runRate.toFixed(2) + '/mo' : '--'}</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Users/day within $${DAILY_BUDGET_USD.toFixed(2)}/day</div>
+                    <div class="card-value green">${headroom !== null ? headroom.toLocaleString() : '--'}</div>
                 </div>
                 <div class="card">
                     <div class="card-label">Avg Response Time</div>
@@ -620,30 +722,45 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
                 </div>
             `;
 
-            // Daily stats table
-            const dailyBody = data.daily_stats.map(d => `
-                <tr>
-                    <td>${d.date}</td>
-                    <td>${d.scans}</td>
-                    <td>${(d.tokens || 0).toLocaleString()}</td>
-                    <td>$${(d.cost || 0).toFixed(4)}</td>
-                </tr>
-            `).join('') || '<tr><td colspan="4">No data</td></tr>';
-            document.querySelector('#daily-table tbody').innerHTML = dailyBody;
+            // Provenance note.
+            // measured + estimated partitions every scan. zeroTokenScans is a
+            // SUBSET of those (a zero-token row still carries a token_source),
+            // so it is phrased as "of which" rather than listed alongside.
+            let provenanceNote = `Costs are computed from token counts at current published prices.`;
+            if (measuredScans > 0 || estimatedScans > 0) {
+                provenanceNote += ` Token data: ${measuredScans} measured, ${estimatedScans} estimated`;
+                if (zeroTokenScans > 0) {
+                    provenanceNote += ` (of which ${zeroTokenScans} had no token data and are excluded from cost)`;
+                }
+                provenanceNote += '.';
+            }
+            document.getElementById('cost-note').innerHTML = provenanceNote;
+
+            // Daily cost chart (inline SVG)
+            renderDailyChart(data.daily_stats, dailyCost);
 
             // Recent scans table (escape user-supplied data to prevent XSS)
-            const recentBody = data.recent_scans.map(s => `
+            // Compute per-row cost from tokens at current prices, show provenance badge
+            const recentBody = data.recent_scans.map(s => {
+                const scanCost = ((s.input_tokens || 0) / 1e6) * PRICE_IN
+                              + ((s.output_tokens || 0) / 1e6) * PRICE_OUT;
+                const isMeasured = s.token_source === 'measured';
+                const badge = isMeasured
+                    ? '<span class="badge badge-measured" title="Token counts from API">✓</span>'
+                    : '<span class="badge badge-estimated" title="Token counts estimated">~</span>';
+                const costDisplay = scanCost > 0 ? '$' + scanCost.toFixed(4) + ' ' + badge : '--';
+                return `
                 <tr>
                     <td>${esc(new Date(s.created_at).toLocaleString())}</td>
                     <td>${esc(s.user_id.slice(0, 8))}...</td>
                     <td>${esc(s.url.slice(0, 30))}...</td>
                     <td>${esc(s.signal_trust_score)}</td>
                     <td>${esc(s.ai_probability_score)}%</td>
-                    <td>$${esc(s.cost_usd.toFixed(4))}</td>
+                    <td>${costDisplay}</td>
                     <td>${esc(s.response_time_ms)}ms</td>
                     <td><button class="grant-link" onclick="fillGrantForm('${esc(s.user_id)}')">Grant</button></td>
                 </tr>
-            `).join('') || '<tr><td colspan="8">No data</td></tr>';
+            `}).join('') || '<tr><td colspan="8">No data</td></tr>';
             document.querySelector('#recent-table tbody').innerHTML = recentBody;
 
             // Allowances table (escape user-supplied data to prevent XSS)
@@ -656,6 +773,57 @@ async def admin_dashboard(username: str = Depends(verify_admin)):
                 </tr>
             `).join('') || '<tr><td colspan="4">No allowances granted</td></tr>';
             document.querySelector('#allowances-table tbody').innerHTML = allowancesBody;
+        }
+
+        function renderDailyChart(dailyStats, dailyCostFn) {
+            const container = document.getElementById('daily-chart');
+
+            if (!dailyStats || dailyStats.length < 2) {
+                container.innerHTML = '<div class="chart-empty">Not enough data yet (need at least 2 days)</div>';
+                return;
+            }
+
+            // Reverse to show oldest to newest (left to right)
+            const days = [...dailyStats].reverse();
+            const costs = days.map(d => dailyCostFn(d));
+            const maxCost = Math.max(...costs, 0.001); // Avoid division by zero
+
+            const width = 600;
+            const height = 200;
+            const padding = { top: 20, right: 20, bottom: 40, left: 60 };
+            const chartWidth = width - padding.left - padding.right;
+            const chartHeight = height - padding.top - padding.bottom;
+            const barWidth = Math.min(60, (chartWidth / days.length) - 10);
+            const barGap = (chartWidth - (barWidth * days.length)) / (days.length + 1);
+
+            let svg = `<svg width="100%" viewBox="0 0 ${width} ${height}" style="max-width: ${width}px;">`;
+
+            // Y-axis
+            svg += `<line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}" stroke="#ccc" stroke-width="1"/>`;
+
+            // Y-axis labels
+            const yTicks = 4;
+            for (let i = 0; i <= yTicks; i++) {
+                const y = padding.top + (chartHeight * i / yTicks);
+                const val = maxCost * (1 - i / yTicks);
+                svg += `<text x="${padding.left - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="#666">$${val.toFixed(3)}</text>`;
+                svg += `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="#eee" stroke-width="1"/>`;
+            }
+
+            // Bars
+            days.forEach((d, i) => {
+                const cost = costs[i];
+                const barHeight = (cost / maxCost) * chartHeight;
+                const x = padding.left + barGap + i * (barWidth + barGap);
+                const y = padding.top + chartHeight - barHeight;
+
+                svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="#4285f4" rx="2"/>`;
+                svg += `<text x="${x + barWidth/2}" y="${y - 5}" text-anchor="middle" font-size="10" fill="#333">${d.scans}</text>`;
+                svg += `<text x="${x + barWidth/2}" y="${height - padding.bottom + 15}" text-anchor="middle" font-size="10" fill="#666">${d.date.slice(5)}</text>`;
+            });
+
+            svg += '</svg>';
+            container.innerHTML = svg;
         }
 
         function fillGrantForm(userId) {

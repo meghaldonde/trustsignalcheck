@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "signalcheck.db"
@@ -34,6 +34,7 @@ def init_db():
             output_tokens INTEGER DEFAULT 0,
             cost_usd REAL DEFAULT 0.0,
             response_time_ms INTEGER DEFAULT 0,
+            token_source TEXT DEFAULT 'estimated',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -54,6 +55,10 @@ def init_db():
             total_input_tokens INTEGER DEFAULT 0,
             total_output_tokens INTEGER DEFAULT 0,
             total_cost_usd REAL DEFAULT 0.0,
+            -- Provenance, carried forward so it survives the 24h purge of `scans`
+            zero_token_scans INTEGER DEFAULT 0,
+            measured_scans INTEGER DEFAULT 0,
+            estimated_scans INTEGER DEFAULT 0,
             avg_response_time_ms REAL DEFAULT 0.0,
             avg_trust_score REAL DEFAULT 0.0,
             avg_ai_probability REAL DEFAULT 0.0,
@@ -77,6 +82,20 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_daily_aggregates_date ON daily_aggregates(agg_date);
         CREATE INDEX IF NOT EXISTS idx_scan_allowances_user ON scan_allowances(user_id);
     """)
+
+    # Migrations for existing databases. SQLite has no ADD COLUMN IF NOT EXISTS,
+    # so each is attempted and the "duplicate column" error is swallowed.
+    _migrations = [
+        "ALTER TABLE scans ADD COLUMN token_source TEXT DEFAULT 'estimated'",
+        "ALTER TABLE daily_aggregates ADD COLUMN zero_token_scans INTEGER DEFAULT 0",
+        "ALTER TABLE daily_aggregates ADD COLUMN measured_scans INTEGER DEFAULT 0",
+        "ALTER TABLE daily_aggregates ADD COLUMN estimated_scans INTEGER DEFAULT 0",
+    ]
+    for stmt in _migrations:
+        try:
+            cursor.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
     conn.commit()
     conn.close()
@@ -121,7 +140,8 @@ def check_rate_limit(user_id: str, max_scans_per_day: int = 1) -> tuple[bool, in
     """
     conn = get_connection()
     cursor = conn.cursor()
-    today = date.today().isoformat()
+    # Use UTC date to match SQLite's CURRENT_TIMESTAMP and dashboard stats
+    today = datetime.now(timezone.utc).date().isoformat()
 
     # Get base limit + any admin-granted extra scans
     extra_scans = get_user_scan_allowance(user_id)
@@ -149,7 +169,8 @@ def increment_scan_count(user_id: str):
     """Increment daily scan count for user."""
     conn = get_connection()
     cursor = conn.cursor()
-    today = date.today().isoformat()
+    # Use UTC date to match SQLite's CURRENT_TIMESTAMP and dashboard stats
+    today = datetime.now(timezone.utc).date().isoformat()
 
     cursor.execute("""
         INSERT INTO daily_limits (user_id, scan_date, scan_count)
@@ -209,7 +230,8 @@ def log_scan(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: float = 0.0,
-    response_time_ms: int = 0
+    response_time_ms: int = 0,
+    token_source: str = "estimated"
 ):
     """Log a scan to the database."""
     conn = get_connection()
@@ -218,11 +240,11 @@ def log_scan(
     cursor.execute("""
         INSERT INTO scans (
             user_id, url, domain_signal_score, ai_probability_score,
-            signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms, token_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id, url, domain_signal_score, ai_probability_score,
-        signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms
+        signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms, token_source
     ))
 
     conn.commit()
@@ -236,7 +258,8 @@ def aggregate_old_data():
     """
     conn = get_connection()
     cursor = conn.cursor()
-    today = date.today().isoformat()
+    # Use UTC date to match SQLite's CURRENT_TIMESTAMP (stored in UTC)
+    today = datetime.now(timezone.utc).date().isoformat()
 
     # Find dates with scans that haven't been aggregated yet (excluding today)
     cursor.execute("""
@@ -250,13 +273,25 @@ def aggregate_old_data():
 
     for agg_date in dates_to_aggregate:
         # Calculate aggregates for this date
+        # Zero-token rows (failed/instrumented scans) are counted but their
+        # token and cost sums are excluded, so per-scan cost is not deflated.
+        # The count is carried forward in zero_token_scans so the exclusion
+        # survives after `scans` is purged.
         cursor.execute("""
             SELECT
                 COUNT(*) as total_scans,
                 COUNT(DISTINCT user_id) as unique_users,
-                SUM(input_tokens) as total_input_tokens,
-                SUM(output_tokens) as total_output_tokens,
-                SUM(cost_usd) as total_cost_usd,
+                SUM(CASE WHEN input_tokens > 0 OR output_tokens > 0
+                         THEN input_tokens ELSE 0 END) as total_input_tokens,
+                SUM(CASE WHEN input_tokens > 0 OR output_tokens > 0
+                         THEN output_tokens ELSE 0 END) as total_output_tokens,
+                SUM(CASE WHEN input_tokens > 0 OR output_tokens > 0
+                         THEN cost_usd ELSE 0 END) as total_cost_usd,
+                COUNT(CASE WHEN input_tokens = 0 AND output_tokens = 0
+                           THEN 1 END) as zero_token_scans,
+                COUNT(CASE WHEN token_source = 'measured' THEN 1 END) as measured_scans,
+                COUNT(CASE WHEN token_source = 'estimated' OR token_source IS NULL
+                           THEN 1 END) as estimated_scans,
                 AVG(response_time_ms) as avg_response_time_ms,
                 AVG(signal_trust_score) as avg_trust_score,
                 AVG(ai_probability_score) as avg_ai_probability,
@@ -272,8 +307,9 @@ def aggregate_old_data():
                 INSERT INTO daily_aggregates (
                     agg_date, total_scans, unique_users,
                     total_input_tokens, total_output_tokens, total_cost_usd,
+                    zero_token_scans, measured_scans, estimated_scans,
                     avg_response_time_ms, avg_trust_score, avg_ai_probability, avg_domain_score
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agg_date,
                 stats["total_scans"],
@@ -281,6 +317,9 @@ def aggregate_old_data():
                 stats["total_input_tokens"] or 0,
                 stats["total_output_tokens"] or 0,
                 stats["total_cost_usd"] or 0.0,
+                stats["zero_token_scans"] or 0,
+                stats["measured_scans"] or 0,
+                stats["estimated_scans"] or 0,
                 stats["avg_response_time_ms"] or 0.0,
                 stats["avg_trust_score"] or 0.0,
                 stats["avg_ai_probability"] or 0.0,
@@ -330,7 +369,8 @@ def get_admin_stats() -> dict:
     """Get aggregate stats for admin dashboard (cumulative + live)."""
     conn = get_connection()
     cursor = conn.cursor()
-    today = date.today().isoformat()
+    # Use UTC date to match SQLite's CURRENT_TIMESTAMP (stored in UTC)
+    today = datetime.now(timezone.utc).date().isoformat()
 
     # === CUMULATIVE STATS (from aggregates + today's live data) ===
 
@@ -341,7 +381,10 @@ def get_admin_stats() -> dict:
             SUM(unique_users) as users,
             SUM(total_input_tokens) as input_tokens,
             SUM(total_output_tokens) as output_tokens,
-            SUM(total_cost_usd) as cost
+            SUM(total_cost_usd) as cost,
+            SUM(COALESCE(zero_token_scans, 0)) as zero_token_scans,
+            SUM(COALESCE(measured_scans, 0)) as measured_scans,
+            SUM(COALESCE(estimated_scans, 0)) as estimated_scans
         FROM daily_aggregates
     """)
     hist = cursor.fetchone()
@@ -350,15 +393,19 @@ def get_admin_stats() -> dict:
     hist_input_tokens = hist["input_tokens"] or 0
     hist_output_tokens = hist["output_tokens"] or 0
     hist_cost = hist["cost"] or 0.0
+    hist_zero_token_scans = hist["zero_token_scans"] or 0
+    hist_measured_scans = hist["measured_scans"] or 0
+    hist_estimated_scans = hist["estimated_scans"] or 0
 
-    # Today's live data
+    # Today's live data (exclude zero-token rows from cost calculations)
     cursor.execute("""
         SELECT
             COUNT(*) as scans,
             COUNT(DISTINCT user_id) as users,
-            SUM(input_tokens) as input_tokens,
-            SUM(output_tokens) as output_tokens,
-            SUM(cost_usd) as cost,
+            SUM(CASE WHEN input_tokens > 0 OR output_tokens > 0 THEN input_tokens ELSE 0 END) as input_tokens,
+            SUM(CASE WHEN input_tokens > 0 OR output_tokens > 0 THEN output_tokens ELSE 0 END) as output_tokens,
+            SUM(CASE WHEN input_tokens > 0 OR output_tokens > 0 THEN cost_usd ELSE 0 END) as cost,
+            COUNT(CASE WHEN input_tokens = 0 AND output_tokens = 0 THEN 1 END) as zero_token_scans,
             AVG(response_time_ms) as avg_response_time,
             AVG(signal_trust_score) as avg_trust,
             AVG(ai_probability_score) as avg_ai_prob,
@@ -372,12 +419,27 @@ def get_admin_stats() -> dict:
     live_input_tokens = live["input_tokens"] or 0
     live_output_tokens = live["output_tokens"] or 0
     live_cost = live["cost"] or 0.0
+    live_zero_token_scans = live["zero_token_scans"] or 0
+
+    # Provenance for TODAY only. `scans` is purged after 24h, so anything older
+    # has to come from daily_aggregates -- see hist_* above.
+    cursor.execute("""
+        SELECT
+            COUNT(CASE WHEN token_source = 'measured' THEN 1 END) as measured,
+            COUNT(CASE WHEN token_source = 'estimated' OR token_source IS NULL THEN 1 END) as estimated
+        FROM scans
+        WHERE DATE(created_at) = ?
+    """, (today,))
+    provenance = cursor.fetchone()
+    measured_scans = hist_measured_scans + (provenance["measured"] or 0)
+    estimated_scans = hist_estimated_scans + (provenance["estimated"] or 0)
 
     # Cumulative totals
     total_scans = hist_scans + live_scans
     total_input_tokens = hist_input_tokens + live_input_tokens
     total_output_tokens = hist_output_tokens + live_output_tokens
     total_cost = hist_cost + live_cost
+    total_zero_token_scans = hist_zero_token_scans + live_zero_token_scans
 
     # Total unique users (historical + today, may overlap but approximation is fine)
     cursor.execute("SELECT COUNT(*) as count FROM daily_aggregates")
@@ -396,7 +458,8 @@ def get_admin_stats() -> dict:
     # === RECENT SCANS (today only, with PII - will be deleted after 24hrs) ===
     cursor.execute("""
         SELECT user_id, url, signal_trust_score, ai_probability_score,
-               cost_usd, response_time_ms, created_at
+               input_tokens, output_tokens, response_time_ms, created_at,
+               COALESCE(token_source, 'estimated') as token_source
         FROM scans
         ORDER BY created_at DESC
         LIMIT 10
@@ -442,6 +505,12 @@ def get_admin_stats() -> dict:
         "avg_domain_score": round(live["avg_domain"] or 0, 1),
         "recent_scans": recent_scans,
         "daily_stats": daily_stats,
+        "zero_token_scans": total_zero_token_scans,
+        "measured_scans": measured_scans,
+        "estimated_scans": estimated_scans,
+        # Denominator for cost-per-scan: excludes rows with no token data, both
+        # today's and those already rolled into daily_aggregates.
+        "valid_scans_for_cost": max(total_scans - total_zero_token_scans, 0),
     }
 
 

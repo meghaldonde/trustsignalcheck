@@ -1,19 +1,168 @@
+import os
 import sqlite3
 from datetime import datetime, date, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "signalcheck.db"
+# --------------------------------------------------------------------------
+# Turso/libSQL compatibility layer
+# --------------------------------------------------------------------------
+# libsql returns plain tuples, not sqlite3.Row objects. These wrappers make
+# libsql tuples behave like sqlite3.Row so the rest of the code (dict(row),
+# row["column"]) works unchanged.
+
+
+class Row:
+    """Wrapper that makes libsql tuples behave like sqlite3.Row."""
+    __slots__ = ("_data", "_columns")
+
+    def __init__(self, columns: tuple, values: tuple):
+        self._columns = columns
+        self._data = dict(zip(columns, values))
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self._data.values())[key]
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data.items())
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    def __repr__(self):
+        return f"Row({self._data})"
+
+
+class CursorWrapper:
+    """Wraps a libsql cursor to return Row objects instead of tuples."""
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self._columns = None
+
+    def execute(self, sql, params=()):
+        result = self._cursor.execute(sql, params)
+        if self._cursor.description:
+            self._columns = tuple(desc[0] for desc in self._cursor.description)
+        return result
+
+    def executescript(self, sql):
+        return self._cursor.executescript(sql)
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        if row is None:
+            return None
+        if self._columns is None and self._cursor.description:
+            self._columns = tuple(desc[0] for desc in self._cursor.description)
+        return Row(self._columns, row) if self._columns else row
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if self._columns is None and self._cursor.description:
+            self._columns = tuple(desc[0] for desc in self._cursor.description)
+        if self._columns:
+            return [Row(self._columns, row) for row in rows]
+        return rows
+
+    def fetchmany(self, size=None):
+        rows = self._cursor.fetchmany(size) if size else self._cursor.fetchmany()
+        if self._columns is None and self._cursor.description:
+            self._columns = tuple(desc[0] for desc in self._cursor.description)
+        if self._columns:
+            return [Row(self._columns, row) for row in rows]
+        return rows
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    @property
+    def lastrowid(self):
+        return self._cursor.lastrowid
+
+
+class ConnectionWrapper:
+    """Wraps a libsql connection to return CursorWrapper."""
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return CursorWrapper(self._conn.cursor())
+
+    def commit(self):
+        return self._conn.commit()
+
+    def close(self):
+        return self._conn.close()
+
+    def execute(self, sql, params=()):
+        cursor = self.cursor()
+        cursor.execute(sql, params)
+        return cursor
+
+
+# --------------------------------------------------------------------------
+# Connection setup
+# --------------------------------------------------------------------------
+
+# Environment variables for Turso
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+
+# Local SQLite fallback path (for development)
+LOCAL_DB_PATH = Path(__file__).parent / "signalcheck.db"
+
+# Track which backend we're using
+_using_turso = False
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """
+    Get a database connection.
+
+    Uses Turso if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are set,
+    otherwise falls back to local SQLite for development.
+    """
+    global _using_turso
+
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        try:
+            import libsql_experimental as libsql
+            conn = libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+            _using_turso = True
+            return ConnectionWrapper(conn)
+        except ImportError:
+            raise RuntimeError(
+                "libsql_experimental not installed. Run: pip install libsql-experimental"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to connect to Turso: {e}")
+    else:
+        # Local SQLite for development
+        conn = sqlite3.connect(LOCAL_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        _using_turso = False
+        return conn
 
 
 def init_db():
     """Initialize database tables."""
-    conn = get_connection()
+    try:
+        conn = get_connection()
+    except RuntimeError as e:
+        # Log the error but don't crash on import - let the first request fail
+        # with a clear message instead of breaking the entire module import
+        print(f"WARNING: Database initialization failed: {e}")
+        print("The API will fail on first request if this is not resolved.")
+        return
+
     cursor = conn.cursor()
 
     cursor.executescript("""
@@ -101,11 +250,14 @@ def init_db():
     for stmt in _migrations:
         try:
             cursor.execute(stmt)
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, Exception):
             pass  # Column already exists
 
     conn.commit()
     conn.close()
+
+    backend = "Turso" if _using_turso else "local SQLite"
+    print(f"Database initialized successfully ({backend})")
 
 
 def get_or_create_user(user_id: str) -> dict:

@@ -68,3 +68,9 @@ htmlcov/
 
 # Chrome extension build artifact
 signalcheck-extension.zip
+
+# Captured page text used as eval input. Kept local: these are full
+# scrapes of third-party pages, stored next to scores that assess whether
+# the writing looks generated. Publishing them would name real sites and
+# their authors alongside an implied verdict about their content.
+pages/

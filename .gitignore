@@ -39,6 +39,7 @@ backend/eval/predictions/*.jsonl
 docs/*
 !docs/index.html
 !docs/CNAME
+!docs/privacy.html
 
 # Product images (for Notion, not GitHub)
 product-images/
@@ -64,3 +65,6 @@ backend/eval/predictions/*.csv
 *.egg-info/
 .coverage
 htmlcov/
+
+# Chrome extension build artifact
+signalcheck-extension.zip

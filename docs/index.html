@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalCheck — Is this page trustworthy?</title>
+<meta name="description" content="A Chrome extension that combines domain reputation with AI-content detection into a single 0–100 trust score. No accounts, 24-hour data purge, published unit economics.">
+<meta property="og:title" content="SignalCheck — Is this page trustworthy?">
+<meta property="og:description" content="One click. Two signals. A single 0–100 trust score.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath d='M40 0H472A40 40 0 0 1 512 40V272C512 388 420 470 256 512 92 470 0 388 0 272V40A40 40 0 0 1 40 0Z' fill='%234F46E5'/%3E%3Cpath d='M128 252 196 252 250 348 322 152 356 202' fill='none' stroke='white' stroke-width='64' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M356 202 384 252' fill='none' stroke='%2322D3EE' stroke-width='64' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  --indigo-600:#4F46E5; --indigo-900:#312E81; --indigo-50:#EEF2FF;
+  --cyan:#22D3EE; --cyan-700:#0E7490;
+  --ink:#0F172A; --ink-2:#334155; --ink-3:#64748B;
+  --line:#E2E8F0; --surface:#FFFFFF; --surface-2:#F8FAFC;
+  --good:#15803D; --warn:#B45309; --bad:#B91C1C;
+  --max:1120px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;
+  color:var(--ink);background:var(--surface);line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
+a{color:var(--indigo-600);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* nav */
+nav{
+  position:sticky;top:0;z-index:50;background:rgba(255,255,255,.88);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line);
+}
+nav .wrap{display:flex;align-items:center;justify-content:space-between;height:64px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;color:var(--ink)}
+.brand:hover{text-decoration:none}
+.brand svg{width:26px;height:26px;display:block}
+.navlinks{display:flex;align-items:center;gap:26px;font-size:14.5px}
+.navlinks a{color:var(--ink-2)}
+.btn{
+  display:inline-block;padding:11px 20px;border-radius:9px;font-weight:600;
+  font-size:15px;text-align:center;transition:.15s;border:1.5px solid transparent;
+}
+.btn-primary{background:var(--indigo-600);color:#fff}
+.btn-primary:hover{background:var(--indigo-900);text-decoration:none}
+.btn-ghost{border-color:var(--line);color:var(--ink-2);background:#fff}
+.btn-ghost:hover{border-color:var(--indigo-600);color:var(--indigo-600);text-decoration:none}
+.btn-sm{padding:8px 15px;font-size:14px}
+
+/* hero */
+header{
+  background:linear-gradient(150deg,#312E81 0%,#4F46E5 58%,#4338CA 100%);
+  color:#fff;padding:88px 0 96px;position:relative;overflow:hidden;
+}
+header::after{
+  content:"";position:absolute;right:-160px;top:-160px;width:520px;height:520px;
+  background:radial-gradient(circle,rgba(34,211,238,.22),transparent 68%);
+}
+header .wrap{position:relative;z-index:1}
+.hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:56px;align-items:center}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;
+  letter-spacing:.4px;text-transform:uppercase;color:var(--cyan);margin-bottom:18px;
+}
+.eyebrow::before{content:"";width:22px;height:2px;background:var(--cyan);border-radius:2px}
+h1{font-size:52px;line-height:1.1;letter-spacing:-1.4px;font-weight:800;margin-bottom:20px}
+.lede{font-size:19.5px;color:#DDD6FE;max-width:34em;margin-bottom:32px}
+.hero-cta{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:22px}
+.hero-cta .btn-primary{background:#fff;color:var(--indigo-900)}
+.hero-cta .btn-primary:hover{background:var(--indigo-50)}
+.hero-cta .btn-ghost{border-color:rgba(255,255,255,.4);color:#fff;background:transparent}
+.hero-cta .btn-ghost:hover{border-color:#fff;color:#fff;background:rgba(255,255,255,.1)}
+.hero-note{font-size:14px;color:#C7D2FE}
+
+/* popup mock */
+.popup{
+  background:#fff;border-radius:14px;padding:20px;color:var(--ink);
+  box-shadow:0 24px 60px rgba(15,23,42,.34);max-width:320px;margin-left:auto;
+}
+.popup-head{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;margin-bottom:14px}
+.popup-head svg{width:20px;height:20px}
+.scanbtn{
+  background:var(--indigo-600);color:#fff;border-radius:8px;padding:11px;
+  text-align:center;font-weight:600;font-size:14.5px;margin-bottom:14px;
+}
+.scorebox{background:var(--surface-2);border-radius:10px;padding:18px;text-align:center;margin-bottom:12px}
+.scorenum{font-size:46px;font-weight:800;line-height:1;color:var(--warn)}
+.scorelabel{font-size:13px;color:var(--ink-3);margin-top:6px}
+.popup-rows{font-size:12.5px;color:var(--ink-2)}
+.popup-rows div{padding:3px 0}
+.popup-rows b{color:var(--ink)}
+.sig{padding-left:16px;color:var(--ink-3);font-size:12px}
+
+/* sections */
+section{padding:84px 0;border-bottom:1px solid var(--line)}
+section.alt{background:var(--surface-2)}
+.sec-head{max-width:640px;margin-bottom:44px}
+h2{font-size:34px;letter-spacing:-.7px;font-weight:750;margin-bottom:14px;line-height:1.2}
+.sec-head p{font-size:17.5px;color:var(--ink-2)}
+h3{font-size:18px;font-weight:700;margin-bottom:8px}
+
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+.card{background:#fff;border:1px solid var(--line);border-radius:13px;padding:26px}
+section.alt .card{background:#fff}
+.card .ico{
+  width:40px;height:40px;border-radius:10px;background:var(--indigo-50);
+  display:flex;align-items:center;justify-content:center;margin-bottom:16px;
+  font-size:19px;
+}
+.card p{font-size:15px;color:var(--ink-2)}
+
+/* score bands */
+.bands{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:34px}
+.band{border-radius:12px;padding:22px;border:1px solid var(--line);background:#fff}
+.band .rng{font-size:27px;font-weight:800;letter-spacing:-.5px}
+.band .nm{font-weight:650;margin:4px 0 6px;font-size:15.5px}
+.band p{font-size:14px;color:var(--ink-3)}
+.band.hi{border-left:4px solid var(--good)} .band.hi .rng{color:var(--good)}
+.band.md{border-left:4px solid var(--warn)} .band.md .rng{color:var(--warn)}
+.band.lo{border-left:4px solid var(--bad)}  .band.lo .rng{color:var(--bad)}
+
+.formula{
+  background:var(--ink);color:#E2E8F0;border-radius:12px;padding:24px 26px;
+  font-size:15px;line-height:1.85;
+}
+.formula code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;color:var(--cyan);
+}
+.formula .muted{color:#94A3B8;font-size:13.5px}
+
+/* metrics strip */
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--line);border-radius:13px;overflow:hidden;background:#fff}
+.metric{padding:26px 24px;border-right:1px solid var(--line)}
+.metric:last-child{border-right:none}
+.metric .v{font-size:29px;font-weight:800;letter-spacing:-.8px;color:var(--indigo-900)}
+.metric .k{font-size:13.5px;color:var(--ink-3);margin-top:5px}
+
+/* lists */
+.checklist{display:grid;grid-template-columns:1fr 1fr;gap:14px 30px}
+.item{display:flex;gap:12px;align-items:flex-start}
+.item .mk{
+  flex:none;width:21px;height:21px;border-radius:50%;background:var(--indigo-50);
+  color:var(--indigo-600);display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:800;margin-top:2px;
+}
+.item .mk.warn{background:#FEF3C7;color:var(--warn)}
+.item b{display:block;font-size:15.5px;margin-bottom:2px}
+.item span{font-size:14.5px;color:var(--ink-2)}
+
+/* install */
+/* minmax(0,1fr) + min-width:0 stop the grid/flex items from being sized by
+   the <pre> content, which would otherwise widen the whole page on mobile */
+.steps{counter-reset:s;display:grid;grid-template-columns:minmax(0,1fr);gap:14px;max-width:720px}
+.step{display:flex;gap:16px;align-items:flex-start;min-width:0}
+.step::before{
+  counter-increment:s;content:counter(s);flex:none;width:29px;height:29px;
+  border-radius:50%;background:var(--indigo-600);color:#fff;font-weight:700;font-size:14px;
+  display:flex;align-items:center;justify-content:center;
+}
+/* min-width:0 lets the flex item shrink so <pre> can scroll internally
+   instead of forcing the page wider on narrow screens */
+.step div{padding-top:2px;font-size:15.5px;color:var(--ink-2);min-width:0}
+pre{
+  background:var(--ink);color:#E2E8F0;padding:15px 18px;border-radius:9px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px;
+  overflow-x:auto;margin-top:6px;max-width:100%;
+}
+.callout{
+  border-left:3px solid var(--cyan);background:#ECFEFF;padding:16px 20px;
+  border-radius:0 9px 9px 0;font-size:15px;color:var(--ink-2);margin-top:28px;max-width:720px;
+}
+
+footer{background:var(--ink);color:#94A3B8;padding:56px 0 44px;font-size:14.5px}
+footer .wrap{display:flex;justify-content:space-between;gap:32px;flex-wrap:wrap}
+footer a{color:#CBD5E1}
+footer .fbrand{display:flex;align-items:center;gap:9px;color:#fff;font-weight:700;font-size:16px;margin-bottom:10px}
+footer .fbrand svg{width:22px;height:22px}
+.flinks{display:flex;gap:26px;flex-wrap:wrap}
+
+@media(max-width:900px){
+  .hero-grid{grid-template-columns:1fr;gap:40px}
+  .popup{margin:0 auto}
+  h1{font-size:38px}
+  .cards,.bands,.metrics,.checklist{grid-template-columns:1fr}
+  .metric{border-right:none;border-bottom:1px solid var(--line)}
+  .metric:last-child{border-bottom:none}
+  .navlinks a:not(.btn){display:none}
+  section{padding:60px 0}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 512 512" aria-hidden="true"><path d="M40 0H472A40 40 0 0 1 512 40V272C512 388 420 470 256 512 92 470 0 388 0 272V40A40 40 0 0 1 40 0Z" fill="#4F46E5"/><path d="M128 252 196 252 250 348 322 152 356 202" fill="none" stroke="#fff" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/><path d="M356 202 384 252" fill="none" stroke="#22D3EE" stroke-width="64" stroke-linecap="round"/></svg>
+      SignalCheck
+    </a>
+    <div class="navlinks">
+      <a href="#how">How it works</a>
+      <a href="#open">Built in the open</a>
+      <a href="#limits">Limitations</a>
+      <a href="#install" class="btn btn-primary btn-sm">Install</a>
+    </div>
+  </div>
+</nav>
+
+<header id="top">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <div class="eyebrow">Chrome extension</div>
+        <h1>Is this page telling you the truth?</h1>
+        <p class="lede">SignalCheck combines domain reputation with AI-content detection into a single 0–100 trust score. One click, two signals, about six seconds.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#install">Install the extension</a>
+          <a class="btn btn-ghost" href="#how">See how the score works</a>
+        </div>
+        <p class="hero-note">Free. No account. Nothing about you is stored beyond 24 hours.</p>
+      </div>
+
+      <div class="popup" role="img" aria-label="Extension popup showing a Signal Trust Score of 53">
+        <div class="popup-head">
+          <svg viewBox="0 0 512 512" aria-hidden="true"><path d="M40 0H472A40 40 0 0 1 512 40V272C512 388 420 470 256 512 92 470 0 388 0 272V40A40 40 0 0 1 40 0Z" fill="#4F46E5"/><path d="M128 252 196 252 250 348 322 152 356 202" fill="none" stroke="#fff" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/><path d="M356 202 384 252" fill="none" stroke="#22D3EE" stroke-width="64" stroke-linecap="round"/></svg>
+          SignalCheck
+        </div>
+        <div class="scanbtn">Scan Page</div>
+        <div class="scorebox">
+          <div class="scorenum">53</div>
+          <div class="scorelabel">Signal Trust Score</div>
+        </div>
+        <div class="popup-rows">
+          <div><b>Domain Signal Score:</b> 85/100 (google_safe_browsing)</div>
+          <div><b>AI Probability:</b> 45%</div>
+          <div><b>Analysis:</b> Hybrid document — human-written body with templated marketing sections</div>
+          <div style="margin-top:6px"><b>Signals:</b></div>
+          <div class="sig">• Uniform sentence rhythm in product copy</div>
+          <div class="sig">• Idiomatic phrasing in the narrative sections</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="how">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Two signals, not one</h2>
+      <p>Most AI detectors read text in a vacuum. Whether a page is trustworthy also depends on where it came from — so SignalCheck checks both and tells you which one moved the score.</p>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="ico">🌐</div>
+        <h3>Where it came from</h3>
+        <p>The URL is checked against Google Safe Browsing for malware, phishing, and unwanted software. A flagged domain drops the score hard and shows the threat type.</p>
+      </div>
+      <div class="card">
+        <div class="ico">✍️</div>
+        <h3>How it was written</h3>
+        <p>The first 2,000 characters are analyzed by Gemini 3.6 Flash for signs of machine generation, returning a probability and the specific signals it noticed.</p>
+      </div>
+      <div class="card">
+        <div class="ico">📊</div>
+        <h3>One number, explained</h3>
+        <p>The two signals combine into a single 0–100 score — and the popup always shows the parts, so you can disagree with the summary.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Reading the score</h2>
+      <p>The score is a signal, not a verdict. It tells you how much scrutiny a page deserves.</p>
+    </div>
+
+    <div class="bands">
+      <div class="band hi"><div class="rng">70–100</div><div class="nm">High trust</div><p>Safe domain, content reads as human-written.</p></div>
+      <div class="band md"><div class="rng">40–69</div><div class="nm">Medium trust</div><p>Mixed signals. Usually worth reading the breakdown.</p></div>
+      <div class="band lo"><div class="rng">0–39</div><div class="nm">Low trust</div><p>Flagged domain, strongly machine-generated content, or both.</p></div>
+    </div>
+
+    <div class="formula">
+      <code>score = (domain_reputation × 0.4) + ((100 − ai_probability) × 0.6)</code><br>
+      <span class="muted">The 40/60 weighting is a starting judgment, not a fitted parameter. Calibrating it against labeled data is what the current evaluation work is for.</span>
+    </div>
+  </div>
+</section>
+
+<section id="open">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Built in the open</h2>
+      <p>Most products don't publish what they cost to run or how fast they actually are. These are measured from the live service, not estimated.</p>
+    </div>
+
+    <div class="metrics">
+      <div class="metric"><div class="v">$0.0066</div><div class="k">Inference cost per scan</div></div>
+      <div class="metric"><div class="v">~6s</div><div class="k">Typical scan time</div></div>
+      <div class="metric"><div class="v">88%</div><div class="k">Of cost is model output</div></div>
+      <div class="metric"><div class="v">24h</div><div class="k">Before your data is deleted</div></div>
+    </div>
+
+    <div class="callout">
+      Cost and latency are read from the model API per request and shown on a live admin dashboard. The full engineering write-up — including the code review that found three governance controls not enforcing what their documentation claimed — is in the <a href="https://carpal-gum-931.notion.site/SignalCheck-AI-Digital-Provenance-Trust-Extension-3b9eb84ed72681aa90c6e5fe5e84801d">case study</a>.
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Privacy by construction</h2>
+      <p>The product needs to identify repeat users for rate limiting and nothing else. Everything follows from that.</p>
+    </div>
+
+    <div class="checklist">
+      <div class="item"><div class="mk">✓</div><div><b>No accounts</b><span>Install and scan. There is no sign-up, because there is nothing to sign into.</span></div></div>
+      <div class="item"><div class="mk">✓</div><div><b>Your IP is never stored</b><span>It is hashed with a secret salt before it touches the database, and the hash cannot be reversed.</span></div></div>
+      <div class="item"><div class="mk">✓</div><div><b>Truncated in your browser</b><span>Only the first 2,000 characters ever leave your machine — the trimming happens before the request is sent.</span></div></div>
+      <div class="item"><div class="mk">✓</div><div><b>Deleted after 24 hours</b><span>Raw scan records are purged daily. Only anonymous totals survive.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>What it can't do yet</h2>
+      <p>A tool about trust should be honest about its own. These are open, not hidden.</p>
+    </div>
+
+    <div class="checklist">
+      <div class="item"><div class="mk warn">!</div><div><b>Accuracy is being measured now</b><span>The AI-detection layer is under evaluation against a labeled dataset. Until that lands, treat the score as a prompt to look closer rather than a judgment.</span></div></div>
+      <div class="item"><div class="mk warn">!</div><div><b>The weighting is a judgment call</b><span>40% domain, 60% content was chosen by reasoning, not fitted to data. Calibration is planned.</span></div></div>
+      <div class="item"><div class="mk warn">!</div><div><b>Page text includes navigation</b><span>Extraction takes visible page text, so menus and boilerplate can dilute the analysis on some sites.</span></div></div>
+      <div class="item"><div class="mk warn">!</div><div><b>One scan per day</b><span>A deliberate cost guardrail while the service runs on a small budget, not a paywall.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Install it</h2>
+      <p>Chrome Web Store submission is planned once the V3 evaluation work is complete. Until then it installs from source in about a minute.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step"><div>Clone the repository.<pre>git clone https://github.com/meghaldonde/trustsignalcheck</pre></div></div>
+      <div class="step"><div>Open <code>chrome://extensions</code> and turn on <b>Developer mode</b> (top right).</div></div>
+      <div class="step"><div>Click <b>Load unpacked</b> and select the <code>extension</code> folder.</div></div>
+      <div class="step"><div>Pin SignalCheck to your toolbar, open any article, and click <b>Scan Page</b>.</div></div>
+    </div>
+
+    <div class="callout">
+      <b>Coming to the Chrome Web Store after V3.</b> The remaining work is accuracy evaluation — measuring how often the detector is right before asking people to rely on it.
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="fbrand">
+        <svg viewBox="0 0 512 512" aria-hidden="true"><path d="M40 0H472A40 40 0 0 1 512 40V272C512 388 420 470 256 512 92 470 0 388 0 272V40A40 40 0 0 1 40 0Z" fill="#4F46E5"/><path d="M128 252 196 252 250 348 322 152 356 202" fill="none" stroke="#fff" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/><path d="M356 202 384 252" fill="none" stroke="#22D3EE" stroke-width="64" stroke-linecap="round"/></svg>
+        SignalCheck
+      </div>
+      <div>Built by <a href="https://www.linkedin.com/in/meghal-donde-pradhan/">Meghal Donde</a> as an AI product management project.</div>
+    </div>
+    <div class="flinks">
+      <a href="https://github.com/meghaldonde/trustsignalcheck">GitHub</a>
+      <a href="https://carpal-gum-931.notion.site/SignalCheck-AI-Digital-Provenance-Trust-Extension-3b9eb84ed72681aa90c6e5fe5e84801d">Case study</a>
+      <a href="#how">How it works</a>
+      <a href="#limits">Limitations</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

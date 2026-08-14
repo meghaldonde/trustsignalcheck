@@ -35,6 +35,8 @@ def init_db():
             cost_usd REAL DEFAULT 0.0,
             response_time_ms INTEGER DEFAULT 0,
             token_source TEXT DEFAULT 'estimated',
+            prompt_version TEXT,
+            prompt_hash TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -90,6 +92,11 @@ def init_db():
         "ALTER TABLE daily_aggregates ADD COLUMN zero_token_scans INTEGER DEFAULT 0",
         "ALTER TABLE daily_aggregates ADD COLUMN measured_scans INTEGER DEFAULT 0",
         "ALTER TABLE daily_aggregates ADD COLUMN estimated_scans INTEGER DEFAULT 0",
+        # Rows that already exist were all scored by the v1 prompt -- that is what
+        # production ran until this commit -- so the DEFAULT is an accurate
+        # backfill, not a placeholder. New rows get their value from main.py.
+        "ALTER TABLE scans ADD COLUMN prompt_version TEXT DEFAULT 'v1-baseline'",
+        "ALTER TABLE scans ADD COLUMN prompt_hash TEXT DEFAULT 'bd8ec8cd'",
     ]
     for stmt in _migrations:
         try:
@@ -231,7 +238,9 @@ def log_scan(
     output_tokens: int = 0,
     cost_usd: float = 0.0,
     response_time_ms: int = 0,
-    token_source: str = "estimated"
+    token_source: str = "estimated",
+    prompt_version: str = "unknown",
+    prompt_hash: str = "unknown",
 ):
     """Log a scan to the database."""
     conn = get_connection()
@@ -240,11 +249,13 @@ def log_scan(
     cursor.execute("""
         INSERT INTO scans (
             user_id, url, domain_signal_score, ai_probability_score,
-            signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms, token_source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms, token_source,
+            prompt_version, prompt_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id, url, domain_signal_score, ai_probability_score,
-        signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms, token_source
+        signal_trust_score, input_tokens, output_tokens, cost_usd, response_time_ms, token_source,
+        prompt_version, prompt_hash
     ))
 
     conn.commit()

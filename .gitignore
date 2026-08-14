@@ -26,11 +26,41 @@ dist/
 # Database
 *.db
 
-# PM Documentation (for Notion, not GitHub)
-docs/
+# Datasets (external, not for repo)
+datasets/
+
+# Eval predictions (large, regenerable)
+backend/eval/predictions/*.jsonl
+
+# PM Documentation (for Notion, not GitHub).
+# 'docs/*' not 'docs/' -- git does not descend into an excluded DIRECTORY, so
+# a '!docs/index.html' negation under 'docs/' is silently ignored. Excluding
+# the CONTENTS instead lets the two published files be re-included.
+docs/*
+!docs/index.html
+!docs/CNAME
 
 # Product images (for Notion, not GitHub)
 product-images/
 
-# Utility scripts (not needed for deployment)
-scripts/
+# Utility scripts. NOT excluded: Render builds from Dockerfile +
+# requirements.txt and never reads scripts/, so shipping them costs nothing
+# at deploy time -- and build_hc3_dataset.py / build_metadata_ab.py are the
+# reproducibility evidence for the eval numbers (length-matching,
+# contamination filtering, the self-audit block). Excluding them leaves
+# results in the repo with no visible method behind them.
+
+# Raw HC3 corpus (71 MB download, regenerable via scripts/build_hc3_dataset.py).
+# Over GitHub's 50 MB warning threshold and derived data, so it does not belong
+# in history -- once committed it stays in the pack forever even if deleted.
+hc3_all.jsonl
+
+# Local eval scratch
+backend/eval/predictions/*.csv
+.eval_cache/
+
+# Python build/test artifacts
+.pytest_cache/
+*.egg-info/
+.coverage
+htmlcov/

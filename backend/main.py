@@ -214,21 +214,52 @@ async def check_domain_signal(url: str) -> DomainSignalScore:
     return DomainSignalScore(reputation_score=50, source="mock_unknown")
 
 
-async def analyze_with_gemini(text: str) -> tuple[AIAnalysis, int, int]:
-    """
-    Analyze text using Gemini Interactions API.
-    Returns (AIAnalysis, input_tokens, output_tokens).
-    """
-    prompt = f"""Analyze the following text and determine if it appears to be AI-generated or human-written.
+# --- Scoring prompt -------------------------------------------------------
+# Kept at module level, not inline, so PROMPT_HASH can be computed over it. The
+# version label is what gets written to every scan row; the hash is what makes
+# that label trustworthy. A label is hand-maintained and can silently drift from
+# the text it names -- the hash cannot, so a mismatch against
+# backend/eval/config.py means production and the eval harness have diverged and
+# any published accuracy figure describes a prompt that is no longer shipped.
+#
+# v2 ("v2-prose-only") added the scope paragraph after an A/B showed three lines
+# of page furniture ("11 min read", a date, "Summarize with:") moved the score 50
+# points on byte-identical prose. Post-fix the same pair scored 90/90, delta 0.
+# Metadata is trivially forgeable, so any score dependence on it is a gaming
+# vector. If you edit this text: bump PROMPT_VERSION, mirror it into
+# backend/eval/config.py, and re-run the A/B.
+PROMPT_VERSION = "v2-prose-only"
+
+PROMPT_TEMPLATE = """Analyze the following text and determine if it appears to be AI-generated or human-written.
+
+Judge the WRITING ONLY. This text was extracted from a web page and may still
+contain page furniture: author names and bylines, publication or update dates,
+reading times, breadcrumbs, navigation, share or summarize widgets, cookie
+notices, and calls to action. Ignore all of it. Any page can carry those
+elements, including a generated one, so they are not evidence of authorship.
+Do not treat the presence of a byline, a date, or web UI text as a sign the
+prose is human-written. Base your score only on the sentences themselves:
+word choice, sentence rhythm, specificity, concreteness, and structure.
+
 Return ONLY valid JSON with these exact fields:
 - ai_probability_score: integer 0-100 (0 = definitely human, 100 = definitely AI)
 - reasoning_flag: brief explanation string
 - key_signals: array of strings with specific signals noticed
 
 Text to analyze:
-{text[:2000]}
+{text}
 
 Respond with JSON only, no markdown or extra text."""
+
+PROMPT_HASH = hashlib.sha256(PROMPT_TEMPLATE.encode()).hexdigest()[:8]
+
+
+async def analyze_with_gemini(text: str) -> tuple[AIAnalysis, int, int]:
+    """
+    Analyze text using Gemini Interactions API.
+    Returns (AIAnalysis, input_tokens, output_tokens).
+    """
+    prompt = PROMPT_TEMPLATE.format(text=text[:2000])
 
     client = get_gemini_client()
     interaction = client.interactions.create(
@@ -353,6 +384,8 @@ async def scan(
         cost_usd=cost_usd,
         response_time_ms=response_time_ms,
         token_source=token_source,
+        prompt_version=PROMPT_VERSION,
+        prompt_hash=PROMPT_HASH,
     )
     increment_scan_count(user_id)
 
